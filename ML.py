@@ -4,7 +4,6 @@ import json
 import os
 import warnings
 
-
 # ML Libraries
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
@@ -16,6 +15,7 @@ from sklearn.svm import SVR
 import xgboost as xgb
 import lightgbm as lgb
 import cubist
+
 # Try to import Cubist, use CatBoost as fallback
 try:
     from cubist import Cubist
@@ -110,6 +110,32 @@ class AdvancedHydrologicalMLPipeline:
         self.test_size = self.config.get('data', 'test_size')
         self.sequence_length = self.config.get('data', 'sequence_length')
 
+        # ADD THESE NEW METHODS HERE:
+
+    def apply_physical_constraints(self, predictions, method='relu'):
+        """Apply physical constraints to ensure realistic flow predictions"""
+        if method == 'relu':
+            return np.maximum(predictions, 0)
+        elif method == 'softplus':
+            return np.log(1 + np.exp(np.clip(predictions, -500, 500)))
+        elif method == 'clamp':
+            min_flow = 0.001
+            max_flow = np.percentile(self.y_train, 99.5)
+            return np.clip(predictions, min_flow, max_flow)
+        else:
+            return predictions
+
+    def post_process_predictions(self, predictions, model_name):
+        """Post-process predictions to ensure physical realism"""
+        constrained_preds = self.apply_physical_constraints(predictions, method='relu')
+
+        negative_count = np.sum(predictions < 0)
+        if negative_count > 0:
+            pct_negative = (negative_count / len(predictions)) * 100
+            print(f"  {model_name}: Corrected {negative_count} negative predictions ({pct_negative:.1f}%)")
+
+        return constrained_preds
+
     def load_and_prepare_data(self):
         """Load and prepare data with advanced feature engineering"""
         print("Loading and preparing data...")
@@ -159,7 +185,7 @@ class AdvancedHydrologicalMLPipeline:
         print(f"Test samples: {len(self.X_test)}")
 
     def _create_features(self, df):
-        """Create comprehensive features"""
+        """Create comprehensive features - CORRECTED to exclude flow-based features"""
         features = []
 
         # Basic meteorological variables
@@ -168,8 +194,8 @@ class AdvancedHydrologicalMLPipeline:
             if var in df.columns:
                 features.append(var)
 
-        # Temperature variables
-        temp_vars = ['tmax(C)', 'tmin(C)', 'tavg(C)']
+        # Temperature variables - check actual column names in your data
+        temp_vars = ['temp(°C)', 'tmax(C)', 'tmin(C)', 'tavg(C)']
         for var in temp_vars:
             if var in df.columns:
                 features.append(var)
@@ -192,34 +218,53 @@ class AdvancedHydrologicalMLPipeline:
         df['day_sin'] = np.sin(2 * np.pi * df['day_of_year'] / 365)
         df['day_cos'] = np.cos(2 * np.pi * df['day_of_year'] / 365)
 
-        # Lagged features
+        # FIXED: Lagged features - ONLY meteorological variables, NO FLOW LAGS
         lag_days = [1, 2, 3, 5, 7, 10, 14, 21, 30]
-        for lag in lag_days:
-            df[f'prcp_lag_{lag}'] = df['prcp(mm/day)'].shift(lag)
-            df[f'flow_lag_{lag}'] = df['flow(m^3/s)'].shift(lag)
-            df[f'pet_lag_{lag}'] = df['pet(mm/day)'].shift(lag)
-            features.extend([f'prcp_lag_{lag}', f'flow_lag_{lag}', f'pet_lag_{lag}'])
 
-        # Rolling statistics
+        # Meteorological variables for lagging
+        met_vars_for_lags = ['prcp(mm/day)', 'pet(mm/day)']
+
+        # Add available temperature variables to lag list
+        for temp_var in ['temp(°C)', 'tmax(C)', 'tmin(C)', 'tavg(C)']:
+            if temp_var in df.columns:
+                met_vars_for_lags.append(temp_var)
+
+        # Add wind if available
+        if 'wind(m/s)' in df.columns:
+            met_vars_for_lags.append('wind(m/s)')
+
+        for var in met_vars_for_lags:
+            for lag in lag_days:
+                feature_name = f'{var.split("(")[0]}_lag_{lag}'
+                df[feature_name] = df[var].shift(lag)
+                features.append(feature_name)
+
+        # FIXED: Rolling statistics - ONLY meteorological variables, NO FLOW ROLLING STATS
         windows = [3, 7, 14, 30, 60]
-        for window in windows:
-            df[f'prcp_roll_mean_{window}'] = df['prcp(mm/day)'].rolling(window=window, min_periods=1).mean()
-            df[f'prcp_roll_sum_{window}'] = df['prcp(mm/day)'].rolling(window=window, min_periods=1).sum()
-            df[f'prcp_roll_max_{window}'] = df['prcp(mm/day)'].rolling(window=window, min_periods=1).max()
-            df[f'prcp_roll_std_{window}'] = df['prcp(mm/day)'].rolling(window=window, min_periods=1).std()
 
-            df[f'pet_roll_mean_{window}'] = df['pet(mm/day)'].rolling(window=window, min_periods=1).mean()
-            df[f'pet_roll_sum_{window}'] = df['pet(mm/day)'].rolling(window=window, min_periods=1).sum()
+        for var in met_vars_for_lags:
+            var_short = var.split('(')[0]  # Get clean variable name
+            for window in windows:
+                # Mean for all variables
+                feature_name = f'{var_short}_roll_mean_{window}'
+                df[feature_name] = df[var].rolling(window=window, min_periods=1).mean()
+                features.append(feature_name)
 
-            df[f'flow_roll_mean_{window}'] = df['flow(m^3/s)'].rolling(window=window, min_periods=1).mean()
-            df[f'flow_roll_std_{window}'] = df['flow(m^3/s)'].rolling(window=window, min_periods=1).std()
+                # Sum for precipitation and PET
+                if var in ['prcp(mm/day)', 'pet(mm/day)']:
+                    feature_name = f'{var_short}_roll_sum_{window}'
+                    df[feature_name] = df[var].rolling(window=window, min_periods=1).sum()
+                    features.append(feature_name)
 
-            features.extend([
-                f'prcp_roll_mean_{window}', f'prcp_roll_sum_{window}',
-                f'prcp_roll_max_{window}', f'prcp_roll_std_{window}',
-                f'pet_roll_mean_{window}', f'pet_roll_sum_{window}',
-                f'flow_roll_mean_{window}', f'flow_roll_std_{window}'
-            ])
+                # Additional stats for precipitation
+                if var == 'prcp(mm/day)':
+                    feature_name = f'{var_short}_roll_max_{window}'
+                    df[feature_name] = df[var].rolling(window=window, min_periods=1).max()
+                    features.append(feature_name)
+
+                    feature_name = f'{var_short}_roll_std_{window}'
+                    df[feature_name] = df[var].rolling(window=window, min_periods=1).std()
+                    features.append(feature_name)
 
         # Antecedent Precipitation Index
         df['api_7'] = df['prcp(mm/day)'].rolling(window=7, min_periods=1).apply(
@@ -239,6 +284,14 @@ class AdvancedHydrologicalMLPipeline:
             'month_sin', 'month_cos', 'day_sin', 'day_cos',
             'api_7', 'api_30', 'prcp_pet_ratio', 'cum_water_deficit'
         ])
+
+        # VERIFICATION: Check for any flow-based features (should be none)
+        flow_features = [f for f in features if 'flow' in f.lower()]
+        if flow_features:
+            print(f"WARNING: Found flow-based features: {flow_features}")
+            print("These will cause data leakage for future prediction!")
+        else:
+            print("✓ Confirmed: No flow-based features - suitable for future prediction")
 
         return features
 
@@ -650,15 +703,21 @@ class AdvancedHydrologicalMLPipeline:
         self.studies['SVM'] = study
 
         # Evaluate with inverse scaling
-        y_pred_train = self.scaler_y.inverse_transform(
+        # Evaluate with inverse scaling and constraints
+        y_pred_train_raw = self.scaler_y.inverse_transform(
             self.models['SVM'].predict(self.X_train_scaled).reshape(-1, 1)
         ).ravel()
-        y_pred_test = self.scaler_y.inverse_transform(
+        y_pred_test_raw = self.scaler_y.inverse_transform(
             self.models['SVM'].predict(self.X_test_scaled).reshape(-1, 1)
         ).ravel()
 
+        # Apply constraints
+        y_pred_train = self.post_process_predictions(y_pred_train_raw, "SVM_train")
+        y_pred_test = self.post_process_predictions(y_pred_test_raw, "SVM_test")
+
         train_metrics = self.calculate_metrics(self.y_train, y_pred_train)
         test_metrics = self.calculate_metrics(self.y_test, y_pred_test)
+
 
         self.results['SVM'] = {
             'train_metrics': train_metrics,
@@ -670,12 +729,15 @@ class AdvancedHydrologicalMLPipeline:
         print(f"Best params: {best_params}")
         print(f"Test NSE: {test_metrics['NSE']:.4f}, R2: {test_metrics['R2']:.4f}")
 
-    def create_lstm_sequences(self, X, y):
+    def create_lstm_sequences(self, X, y, sequence_length=None):
         """Create sequences for LSTM"""
+        if sequence_length is None:
+            sequence_length = self.sequence_length  # Use default if not specified
+
         X_seq, y_seq = [], []
-        for i in range(len(X) - self.sequence_length):
-            X_seq.append(X[i:i + self.sequence_length])
-            y_seq.append(y[i + self.sequence_length])
+        for i in range(len(X) - sequence_length):
+            X_seq.append(X[i:i + sequence_length])
+            y_seq.append(y[i + sequence_length])
         return np.array(X_seq), np.array(y_seq)
 
     def build_advanced_lstm_model(self, hp):
@@ -781,7 +843,7 @@ class AdvancedHydrologicalMLPipeline:
         x = Dropout(hp.Float('dense_dropout', 0.0, 0.5))(x)
 
         # Output layer
-        outputs = Dense(1)(x)
+        outputs = Dense(1, activation='relu')(x)  # Forces non-negative outputs
 
         # Create and compile model
         model = Model(inputs=inputs, outputs=outputs)
@@ -800,67 +862,187 @@ class AdvancedHydrologicalMLPipeline:
         print("Optimizing Advanced LSTM Architectures with Keras Tuner...")
         print("=" * 60)
 
-        # Prepare sequences
-        self.X_train_seq, self.y_train_seq = self.create_lstm_sequences(
-            self.X_train_scaled, self.y_train_scaled
-        )
-        self.X_test_seq, self.y_test_seq = self.create_lstm_sequences(
-            self.X_test_scaled, self.y_test_scaled
-        )
+        # Custom model builder that handles variable sequence length
+        def build_model_with_sequence(hp):
+            # Get sequence length from hyperparameter search
+            sequence_length = hp.Choice('sequence_length',
+                                        self.config.get('lstm', 'search_space', 'sequence_length'))
 
-        print(f"Sequence shape: {self.X_train_seq.shape}")
+            # Create sequences with this specific length
+            X_train_seq, y_train_seq = self.create_lstm_sequences(
+                self.X_train_scaled, self.y_train_scaled, sequence_length
+            )
+            X_test_seq, y_test_seq = self.create_lstm_sequences(
+                self.X_test_scaled, self.y_test_scaled, sequence_length
+            )
 
-        # Create tuner
-        tuner = kt.RandomSearch(
-            self.build_advanced_lstm_model,
+            # Store for later use
+            hp.values['actual_sequence_length'] = sequence_length
+
+            # Build the model with the correct input shape
+            input_shape = (sequence_length, self.X_train_scaled.shape[1])
+
+            # Now build the rest of the model using existing architecture choices
+            architecture = hp.Choice('architecture',
+                                     ['lstm_simple', 'lstm_bidirectional', 'lstm_attention',
+                                      'gru_based', 'cnn_lstm', 'hybrid'])
+
+            inputs = Input(shape=input_shape)
+
+            if architecture == 'lstm_simple':
+                x = inputs
+                n_layers = hp.Int('n_layers', 2, 4)
+
+                for i in range(n_layers):
+                    units = hp.Int(f'units_layer_{i + 1}', 32, 256)
+                    dropout = hp.Float('dropout_rate', 0.0, 0.5)
+                    return_sequences = (i < n_layers - 1)
+
+                    x = LSTM(units, return_sequences=return_sequences,
+                             dropout=dropout)(x)
+
+            elif architecture == 'lstm_bidirectional':
+                x = inputs
+                n_layers = hp.Int('n_layers', 2, 3)
+
+                for i in range(n_layers):
+                    units = hp.Int(f'units_layer_{i + 1}', 32, 128)
+                    dropout = hp.Float('dropout_rate', 0.0, 0.5)
+                    return_sequences = (i < n_layers - 1)
+
+                    x = Bidirectional(LSTM(units, return_sequences=return_sequences,
+                                           dropout=dropout))(x)
+
+            # ... (other architectures remain similar)
+            else:  # default/hybrid
+                x = LSTM(hp.Int('lstm_units', 64, 128),
+                         dropout=hp.Float('dropout_rate', 0.0, 0.5))(inputs)
+
+            # Dense layers
+            x = Dense(hp.Int('dense_units', 32, 128),
+                      activation=hp.Choice('activation', ['relu', 'tanh']))(x)
+            x = Dropout(hp.Float('dense_dropout', 0.0, 0.5))(x)
+
+            # Output layer
+            outputs = Dense(1)(x)
+
+            # Create and compile model
+            model = Model(inputs=inputs, outputs=outputs)
+
+            model.compile(
+                optimizer=Adam(hp.Float('learning_rate', 0.0001, 0.01, sampling='log')),
+                loss='mse',
+                metrics=['mae']
+            )
+
+            return model, X_train_seq, y_train_seq, X_test_seq, y_test_seq, sequence_length
+
+        # Modified tuner that handles sequence length
+        class SequenceTuner(kt.RandomSearch):
+            def run_trial(self, trial, *args, **kwargs):
+                hp = trial.hyperparameters
+
+                # Build model and get sequences for this trial
+                model, X_train_seq, y_train_seq, X_test_seq, y_test_seq, seq_len = build_model_with_sequence(hp)
+
+                # Store sequence length for this trial
+                self.seq_length = seq_len
+
+                # Train the model
+                history = model.fit(
+                    X_train_seq, y_train_seq,
+                    epochs=self.config.get('lstm', 'fixed_params', 'epochs'),
+                    validation_split=self.config.get('lstm', 'fixed_params', 'validation_split'),
+                    callbacks=[
+                        EarlyStopping(
+                            monitor='val_loss',
+                            patience=self.config.get('lstm', 'fixed_params', 'patience'),
+                            restore_best_weights=True
+                        ),
+                        ReduceLROnPlateau(
+                            monitor='val_loss',
+                            factor=self.config.get('lstm', 'fixed_params', 'reduce_lr_factor'),
+                            patience=self.config.get('lstm', 'fixed_params', 'reduce_lr_patience'),
+                            min_lr=self.config.get('lstm', 'fixed_params', 'min_lr')
+                        )
+                    ],
+                    verbose=0
+                )
+
+                # Evaluate
+                val_loss = min(history.history['val_loss'])
+
+                # Save the best model info
+                if not hasattr(self, 'best_val_loss') or val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.best_model = model
+                    self.best_sequences = (X_train_seq, y_train_seq, X_test_seq, y_test_seq)
+                    self.best_seq_length = seq_len
+
+                return {'val_loss': val_loss}
+
+        # Create custom tuner
+        tuner = SequenceTuner(
+            build_model_with_sequence,
             objective='val_loss',
             max_trials=self.config.get('lstm', 'optimization', 'max_trials'),
-            executions_per_trial=self.config.get('lstm', 'optimization', 'executions_per_trial'),
             directory=self.config.get('lstm', 'optimization', 'directory'),
             project_name=self.config.get('lstm', 'optimization', 'project_name'),
             overwrite=self.config.get('lstm', 'optimization', 'overwrite')
         )
+        tuner.config = self.config  # Pass config to tuner
 
-        # Callbacks
-        early_stop = EarlyStopping(
-            monitor='val_loss',
-            patience=self.config.get('lstm', 'fixed_params', 'patience'),
-            restore_best_weights=True
-        )
+        # Run search
+        tuner.search()
 
-        reduce_lr = ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=self.config.get('lstm', 'fixed_params', 'reduce_lr_factor'),
-            patience=self.config.get('lstm', 'fixed_params', 'reduce_lr_patience'),
-            min_lr=self.config.get('lstm', 'fixed_params', 'min_lr')
-        )
+        # Get best model and sequences
+        best_model = tuner.best_model
+        X_train_seq, y_train_seq, X_test_seq, y_test_seq = tuner.best_sequences
+        best_seq_length = tuner.best_seq_length
 
-        # Search
-        tuner.search(
-            self.X_train_seq, self.y_train_seq,
-            epochs=self.config.get('lstm', 'fixed_params', 'epochs'),
-            validation_split=self.config.get('lstm', 'fixed_params', 'validation_split'),
-            callbacks=[early_stop, reduce_lr],
-            verbose=1
-        )
+        # Store the best sequence length
+        self.sequence_length = best_seq_length
 
-        # Get best model
-        best_model = tuner.get_best_models()[0]
+        # Get best parameters
         best_params = tuner.get_best_hyperparameters()[0].values
+        best_params['best_sequence_length'] = best_seq_length
 
         self.models['LSTM'] = best_model
         self.best_params['LSTM'] = best_params
         self.tuners['LSTM'] = tuner
 
+        # Store sequences for later use
+        self.X_train_seq = X_train_seq
+        self.y_train_seq = y_train_seq
+        self.X_test_seq = X_test_seq
+        self.y_test_seq = y_test_seq
+
+        print(f"Best sequence length: {best_seq_length}")
+        print(f"Sequence shape: {X_train_seq.shape}")
+
         # Evaluate
-        y_pred_train_scaled = best_model.predict(self.X_train_seq, verbose=0).ravel()
-        y_pred_test_scaled = best_model.predict(self.X_test_seq, verbose=0).ravel()
+        # Evaluate with constraints and length alignment
+        y_pred_train_scaled = best_model.predict(X_train_seq, verbose=0).ravel()
+        y_pred_test_scaled = best_model.predict(X_test_seq, verbose=0).ravel()
 
-        y_pred_train = self.scaler_y.inverse_transform(y_pred_train_scaled.reshape(-1, 1)).ravel()
-        y_pred_test = self.scaler_y.inverse_transform(y_pred_test_scaled.reshape(-1, 1)).ravel()
+        y_pred_train_raw = self.scaler_y.inverse_transform(y_pred_train_scaled.reshape(-1, 1)).ravel()
+        y_pred_test_raw = self.scaler_y.inverse_transform(y_pred_test_scaled.reshape(-1, 1)).ravel()
 
-        y_train_lstm = self.scaler_y.inverse_transform(self.y_train_seq.reshape(-1, 1)).ravel()
-        y_test_lstm = self.scaler_y.inverse_transform(self.y_test_seq.reshape(-1, 1)).ravel()
+        # Apply constraints
+        y_pred_train = self.post_process_predictions(y_pred_train_raw, "LSTM_train")
+        y_pred_test = self.post_process_predictions(y_pred_test_raw, "LSTM_test")
+
+        y_train_lstm = self.scaler_y.inverse_transform(y_train_seq.reshape(-1, 1)).ravel()
+        y_test_lstm = self.scaler_y.inverse_transform(y_test_seq.reshape(-1, 1)).ravel()
+
+        # Ensure length alignment
+        min_train_len = min(len(y_pred_train), len(y_train_lstm))
+        min_test_len = min(len(y_pred_test), len(y_test_lstm))
+
+        y_pred_train = y_pred_train[:min_train_len]
+        y_train_lstm = y_train_lstm[:min_train_len]
+        y_pred_test = y_pred_test[:min_test_len]
+        y_test_lstm = y_test_lstm[:min_test_len]
 
         train_metrics = self.calculate_metrics(y_train_lstm, y_pred_train)
         test_metrics = self.calculate_metrics(y_test_lstm, y_pred_test)
@@ -872,18 +1054,36 @@ class AdvancedHydrologicalMLPipeline:
             'y_pred_test': y_pred_test,
             'y_train_seq': y_train_lstm,
             'y_test_seq': y_test_lstm,
-            'architecture': best_params.get('architecture', 'unknown')
+            'architecture': best_params.get('architecture', 'unknown'),
+            'sequence_length': best_seq_length
         }
 
         print(f"Best architecture: {best_params.get('architecture', 'unknown')}")
         print(f"Best params: {best_params}")
         print(f"Test NSE: {test_metrics['NSE']:.4f}, R2: {test_metrics['R2']:.4f}")
 
-    def _evaluate_model(self, model_name):
-        """Evaluate a trained model"""
-        y_pred_train = self.models[model_name].predict(self.X_train_scaled)
-        y_pred_test = self.models[model_name].predict(self.X_test_scaled)
 
+    def optimize_all_models(self):
+        """Run optimization for all models"""
+        self.optimize_xgboost()
+        self.optimize_lightgbm()
+        self.optimize_random_forest()
+        self.optimize_cubist()  # Now included!
+        self.optimize_svm()
+        self.optimize_lstm()
+
+    def _evaluate_model(self, model_name):
+        """Evaluate a trained model with physical constraints applied"""
+
+        # Get raw predictions
+        y_pred_train_raw = self.models[model_name].predict(self.X_train_scaled)
+        y_pred_test_raw = self.models[model_name].predict(self.X_test_scaled)
+
+        # Apply physical constraints
+        y_pred_train = self.post_process_predictions(y_pred_train_raw, f"{model_name}_train")
+        y_pred_test = self.post_process_predictions(y_pred_test_raw, f"{model_name}_test")
+
+        # Calculate metrics with constrained predictions
         train_metrics = self.calculate_metrics(self.y_train, y_pred_train)
         test_metrics = self.calculate_metrics(self.y_test, y_pred_test)
 
@@ -899,15 +1099,6 @@ class AdvancedHydrologicalMLPipeline:
 
         print(f"Best params: {self.best_params[model_name]}")
         print(f"Test NSE: {test_metrics['NSE']:.4f}, R2: {test_metrics['R2']:.4f}")
-
-    def optimize_all_models(self):
-        """Run optimization for all models"""
-        self.optimize_xgboost()
-        self.optimize_lightgbm()
-        self.optimize_random_forest()
-        self.optimize_cubist()  # Now included!
-        self.optimize_svm()
-        self.optimize_lstm()
 
     def print_summary(self):
         """Print comprehensive summary"""

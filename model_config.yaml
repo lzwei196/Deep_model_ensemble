@@ -1,0 +1,75 @@
+# model_config.yaml
+# Model Training Configuration
+# Select which models to train and their priorities
+
+# Site configuration
+site_name: Bengbu  # Change this to your site name
+
+# Traditional ML Models
+traditional_models:
+  XGBoost:
+    enabled: true
+    priority: 1
+  LightGBM:
+    enabled: true
+    priority: 2
+  RandomForest:
+    enabled: true
+    priority: 3
+  Cubist:
+    enabled: true
+    priority: 4
+  SVM:
+    enabled: true
+    priority: 5
+
+# Deep Learning Models
+deep_learning_models:
+  LSTM:
+    enabled: true
+    priority: 6
+  LSTM_MC:  # Mass Conservation LSTM
+    enabled: false
+    priority: 7
+  CNN_LSTM:
+    enabled: false
+    priority: 8
+  Transformer:
+    enabled: false  # Set to true when ready
+    priority: 9
+  GRU:
+    enabled: false
+    priority: 10
+
+hydrodl_models:
+  HydroDL_LSTM:        # ✓ Matches class name
+    enabled: true
+    priority: 11
+  HydroDL_CNN1D:       # ✓ Matches class name
+    enabled: true
+    priority: 12
+  HydroDL_CudnnLSTM:   # ✓ Matches class name
+    enabled: true
+    priority: 13
+  HydroDL_MTS_LSTM:    # ✓ Matches class name
+    enabled: true
+    priority: 14
+
+# Ensemble Models
+ensemble_models:
+  Ensemble_Deep:
+    enabled: false
+    priority: 15
+  Weighted_Ensemble:
+    enabled: false
+    priority: 16
+
+# Model training settings
+training_settings:
+  parallel_training: false
+  max_parallel_jobs: 2
+  save_intermediate: true
+  verbose: true
+  early_stopping_patience: 20
+  max_epochs_dl: 150  # For deep learning models
+  optuna_trials: 50   # Number of trials for hyperparameter optimization

@@ -3,9 +3,10 @@ import json
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import matplotlib
+
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import seaborn as sns
-from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
 
@@ -32,95 +33,261 @@ class ResultsExporter:
         # 3. Export model comparisons
         self._export_model_comparison()
 
-        # 4. Generate visualizations
+        # 4. Export best model config for extended simulation  # ADD THIS
+        self._export_best_model_config()  # ADD THIS
+
+        # 5. Generate visualizations
         self._create_visualizations()
 
-        # 5. Export feature importance
+        # 6. Export feature importance
         self._export_feature_importance()
 
-        # 6. Create summary report
+        # 7. Create summary report
         self._create_summary_report()
 
         print(f"\n✅ All results exported to {self.output_dir}/")
 
+    def _export_best_model_config(self):
+        """Export best model configuration for extended simulation use"""
+        print("\nExporting best model configuration...")
+
+        if not self.pipeline.results:
+            print("  No results to export")
+            return
+
+        # Find best model by test NSE
+        best_model_name = max(self.pipeline.results.keys(),
+                              key=lambda k: self.pipeline.results[k]['test_metrics']['NSE'])
+
+        best_result = self.pipeline.results[best_model_name]
+
+        # Create configuration for extended simulation
+        config = {
+            "best_model": {
+                "name": best_model_name,
+                "test_nse": best_result['test_metrics']['NSE'],
+                "test_r2": best_result['test_metrics']['R2'],
+                "test_rmse": best_result['test_metrics']['RMSE'],
+                "test_kge": best_result['test_metrics']['KGE']
+            },
+            "model_specific": {},
+            "data_info": {
+                "feature_names": self.pipeline.feature_names,
+                "num_features": len(self.pipeline.feature_names),
+                "train_samples": len(self.pipeline.X_train),
+                "test_samples": len(self.pipeline.X_test),
+                "flow_threshold": self.pipeline.flow_threshold,
+                "test_size": self.pipeline.test_size
+            },
+            "scaling": {
+                "scaler_X_type": type(self.pipeline.scaler_X).__name__,
+                "scaler_y_type": type(self.pipeline.scaler_y).__name__
+            }
+        }
+
+        # Add model-specific configuration
+        if best_model_name == 'LSTM':
+            config["model_specific"] = {
+                "sequence_length": best_result.get('sequence_length', self.pipeline.sequence_length),
+                "architecture": best_result.get('architecture', 'unknown'),
+                "input_shape": [best_result.get('sequence_length', self.pipeline.sequence_length),
+                                len(self.pipeline.feature_names)],
+                "requires_sequences": True,
+                "dates_offset": best_result.get('sequence_length', self.pipeline.sequence_length)
+            }
+        elif best_model_name == 'SVM':
+            config["model_specific"] = {
+                "requires_sequences": False,
+                "uses_scaled_targets": True,
+                "dates_offset": 0
+            }
+        else:
+            config["model_specific"] = {
+                "requires_sequences": False,
+                "uses_scaled_targets": False,
+                "dates_offset": 0
+            }
+
+        # Add hyperparameters if available
+        if hasattr(self.pipeline, 'best_params') and best_model_name in self.pipeline.best_params:
+            config["hyperparameters"] = self.pipeline.best_params[best_model_name]
+
+        # Add all model performances for comparison
+        config["all_models_performance"] = {}
+        for model_name, result in self.pipeline.results.items():
+            config["all_models_performance"][model_name] = {
+                "test_nse": result['test_metrics']['NSE'],
+                "test_r2": result['test_metrics']['R2'],
+                "test_rmse": result['test_metrics']['RMSE'],
+                "test_kge": result['test_metrics']['KGE'],
+                "rank": 0  # Will be filled below
+            }
+
+        # Add rankings
+        sorted_models = sorted(config["all_models_performance"].items(),
+                               key=lambda x: x[1]['test_nse'], reverse=True)
+        for rank, (model_name, _) in enumerate(sorted_models, 1):
+            config["all_models_performance"][model_name]["rank"] = rank
+
+        # Export metadata
+        config["export_info"] = {
+            "timestamp": datetime.now().isoformat(),
+            "total_models_trained": len(self.pipeline.results),
+            "data_file": getattr(self.pipeline, 'filepath', 'unknown'),
+            "config_version": "1.0"
+        }
+
+        # Save JSON
+        json_file = os.path.join(self.output_dir, 'best_model_config.json')
+        with open(json_file, 'w') as f:
+            json.dump(config, f, indent=2, default=str)
+
+        print(f"  Saved best model config to {json_file}")
+        print(f"  Best model: {best_model_name} (NSE: {best_result['test_metrics']['NSE']:.4f})")
+
+        if best_model_name == 'LSTM':
+            seq_len = config["model_specific"]["sequence_length"]
+            print(f"  LSTM sequence length: {seq_len}")
+
+        # Also create a simple lookup file for quick access
+        simple_config = {
+            "best_model_name": best_model_name,
+            "sequence_length": config["model_specific"].get("sequence_length", 0),
+            "requires_sequences": config["model_specific"]["requires_sequences"],
+            "dates_offset": config["model_specific"]["dates_offset"],
+            "test_nse": config["best_model"]["test_nse"]
+        }
+
+        simple_file = os.path.join(self.output_dir, 'model_lookup.json')
+        with open(simple_file, 'w') as f:
+            json.dump(simple_config, f, indent=2)
+
+        print(f"  Saved simple lookup to {simple_file}")
+
+        return config
+
     def _export_predictions(self):
-        """Export predictions for entire dataset"""
-        print("\nExporting predictions...")
+        """Export predictions for entire dataset with length validation"""
+        print("Exporting predictions...")
 
         for model_name in self.pipeline.results:
-            result = self.pipeline.results[model_name]
+            try:
+                result = self.pipeline.results[model_name]
 
-            # Prepare data based on model type
-            if model_name == 'LSTM':
-                # LSTM has different sequence lengths
-                train_dates = self.pipeline.dates_train[self.pipeline.sequence_length:]
-                test_dates = self.pipeline.dates_test[self.pipeline.sequence_length:]
-                y_train_actual = result.get('y_train_seq', self.pipeline.y_train[self.pipeline.sequence_length:])
-                y_test_actual = result.get('y_test_seq', self.pipeline.y_test[self.pipeline.sequence_length:])
-            else:
-                train_dates = self.pipeline.dates_train
-                test_dates = self.pipeline.dates_test
-                y_train_actual = self.pipeline.y_train
-                y_test_actual = self.pipeline.y_test
+                # Prepare data based on model type with length validation
+                if model_name == 'LSTM':
+                    # LSTM has different sequence lengths
+                    train_dates = self.pipeline.dates_train[self.pipeline.sequence_length:]
+                    test_dates = self.pipeline.dates_test[self.pipeline.sequence_length:]
+                    y_train_actual = result.get('y_train_seq', self.pipeline.y_train[self.pipeline.sequence_length:])
+                    y_test_actual = result.get('y_test_seq', self.pipeline.y_test[self.pipeline.sequence_length:])
+                else:
+                    train_dates = self.pipeline.dates_train
+                    test_dates = self.pipeline.dates_test
+                    y_train_actual = self.pipeline.y_train
+                    y_test_actual = self.pipeline.y_test
 
-            # Create comprehensive DataFrame
-            train_df = pd.DataFrame({
-                'date': train_dates,
-                'observed_flow': y_train_actual,
-                'predicted_flow': result['y_pred_train'][:len(y_train_actual)],
-                'split': 'train'
-            })
+                # Get predictions
+                y_pred_train = result['y_pred_train']
+                y_pred_test = result['y_pred_test']
 
-            test_df = pd.DataFrame({
-                'date': test_dates,
-                'observed_flow': y_test_actual,
-                'predicted_flow': result['y_pred_test'][:len(y_test_actual)],
-                'split': 'test'
-            })
+                # Validate and fix training data lengths
+                min_train_len = min(len(train_dates), len(y_train_actual), len(y_pred_train))
+                if len(train_dates) != len(y_train_actual) or len(train_dates) != len(y_pred_train):
+                    print(f"  Warning: Length mismatch in {model_name} training data")
+                    print(
+                        f"    Dates: {len(train_dates)}, Actual: {len(y_train_actual)}, Predicted: {len(y_pred_train)}")
+                    print(f"    Using minimum length: {min_train_len}")
 
-            # Combine and add error metrics
-            full_df = pd.concat([train_df, test_df], ignore_index=True)
-            full_df['error'] = full_df['predicted_flow'] - full_df['observed_flow']
-            full_df['absolute_error'] = np.abs(full_df['error'])
-            full_df['relative_error'] = (full_df['error'] / full_df['observed_flow'] * 100).replace([np.inf, -np.inf],
-                                                                                                    np.nan)
+                    # Truncate to minimum length
+                    train_dates = train_dates[:min_train_len]
+                    y_train_actual = y_train_actual[:min_train_len]
+                    y_pred_train = y_pred_train[:min_train_len]
 
-            # Add time-based features for analysis
-            full_df['date'] = pd.to_datetime(full_df['date'])
-            full_df['year'] = full_df['date'].dt.year
-            full_df['month'] = full_df['date'].dt.month
-            full_df['season'] = full_df['month'].apply(lambda x: 'Winter' if x in [12, 1, 2]
-            else 'Spring' if x in [3, 4, 5]
-            else 'Summer' if x in [6, 7, 8]
-            else 'Fall')
+                # Validate and fix test data lengths
+                min_test_len = min(len(test_dates), len(y_test_actual), len(y_pred_test))
+                if len(test_dates) != len(y_test_actual) or len(test_dates) != len(y_pred_test):
+                    print(f"  Warning: Length mismatch in {model_name} test data")
+                    print(f"    Dates: {len(test_dates)}, Actual: {len(y_test_actual)}, Predicted: {len(y_pred_test)}")
+                    print(f"    Using minimum length: {min_test_len}")
 
-            # Save to CSV
-            output_file = os.path.join(self.output_dir, f'{model_name}_predictions.csv')
-            full_df.to_csv(output_file, index=False)
-            print(f"  Saved {model_name} predictions to {output_file}")
+                    # Truncate to minimum length
+                    test_dates = test_dates[:min_test_len]
+                    y_test_actual = y_test_actual[:min_test_len]
+                    y_pred_test = y_pred_test[:min_test_len]
 
-            # Also save as Excel with formatting
-            excel_file = os.path.join(self.output_dir, f'{model_name}_predictions.xlsx')
-            with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
-                full_df.to_excel(writer, sheet_name='Predictions', index=False)
+                # Create comprehensive DataFrames with validated lengths
+                train_df = pd.DataFrame({
+                    'date': train_dates,
+                    'observed_flow': y_train_actual,
+                    'predicted_flow': y_pred_train,
+                    'split': 'train'
+                })
 
-                # Add summary statistics sheet
-                summary_stats = full_df.groupby('split').agg({
-                    'observed_flow': ['mean', 'std', 'min', 'max'],
-                    'predicted_flow': ['mean', 'std', 'min', 'max'],
-                    'absolute_error': ['mean', 'std', 'min', 'max'],
-                    'relative_error': ['mean', 'std']
-                }).round(3)
-                summary_stats.to_excel(writer, sheet_name='Summary_Stats')
+                test_df = pd.DataFrame({
+                    'date': test_dates,
+                    'observed_flow': y_test_actual,
+                    'predicted_flow': y_pred_test,
+                    'split': 'test'
+                })
 
-                # Add seasonal performance
-                seasonal_stats = full_df.groupby(['split', 'season']).agg({
-                    'absolute_error': 'mean',
-                    'relative_error': 'mean'
-                }).round(3)
-                seasonal_stats.to_excel(writer, sheet_name='Seasonal_Performance')
+                # Combine and add error metrics
+                full_df = pd.concat([train_df, test_df], ignore_index=True)
+                full_df['error'] = full_df['predicted_flow'] - full_df['observed_flow']
+                full_df['absolute_error'] = np.abs(full_df['error'])
 
-            print(f"  Saved {model_name} Excel report to {excel_file}")
+                # Handle division by zero for relative error
+                full_df['relative_error'] = np.where(
+                    full_df['observed_flow'] != 0,
+                    (full_df['error'] / full_df['observed_flow'] * 100),
+                    np.nan
+                )
+                full_df['relative_error'] = full_df['relative_error'].replace([np.inf, -np.inf], np.nan)
+
+                # Add time-based features for analysis
+                full_df['date'] = pd.to_datetime(full_df['date'])
+                full_df['year'] = full_df['date'].dt.year
+                full_df['month'] = full_df['date'].dt.month
+                full_df['season'] = full_df['month'].apply(lambda x: 'Winter' if x in [12, 1, 2]
+                else 'Spring' if x in [3, 4, 5]
+                else 'Summer' if x in [6, 7, 8]
+                else 'Fall')
+
+                # Save to CSV
+                output_file = os.path.join(self.output_dir, f'{model_name}_predictions.csv')
+                full_df.to_csv(output_file, index=False)
+                print(f"  Saved {model_name} predictions to {output_file}")
+
+                # Also save as Excel with formatting
+                excel_file = os.path.join(self.output_dir, f'{model_name}_predictions.xlsx')
+                with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+                    full_df.to_excel(writer, sheet_name='Predictions', index=False)
+
+                    # Add summary statistics sheet
+                    try:
+                        summary_stats = full_df.groupby('split').agg({
+                            'observed_flow': ['mean', 'std', 'min', 'max'],
+                            'predicted_flow': ['mean', 'std', 'min', 'max'],
+                            'absolute_error': ['mean', 'std', 'min', 'max'],
+                            'relative_error': ['mean', 'std']
+                        }).round(3)
+                        summary_stats.to_excel(writer, sheet_name='Summary_Stats')
+
+                        # Add seasonal performance
+                        seasonal_stats = full_df.groupby(['split', 'season']).agg({
+                            'absolute_error': 'mean',
+                            'relative_error': 'mean'
+                        }).round(3)
+                        seasonal_stats.to_excel(writer, sheet_name='Seasonal_Performance')
+                    except Exception as e:
+                        print(f"    Warning: Could not create summary sheets for {model_name}: {e}")
+
+                print(f"  Saved {model_name} Excel report to {excel_file}")
+
+            except Exception as e:
+                print(f"  Error exporting predictions for {model_name}: {str(e)}")
+                print(f"    Skipping {model_name} and continuing with other models...")
+                continue
 
     def _export_metrics(self):
         """Export detailed performance metrics"""
@@ -472,6 +639,8 @@ class ResultsExporter:
             plt.savefig(os.path.join(self.output_dir, 'feature_importance.png'), dpi=300, bbox_inches='tight')
             plt.close()
 
+    # Fix for _create_summary_report method in results_exporter.py
+
     def _create_summary_report(self):
         """Create comprehensive text summary report"""
         print("\nCreating summary report...")
@@ -495,9 +664,20 @@ class ResultsExporter:
             # Data period information
             f.write("DATA PERIOD INFORMATION:\n")
             f.write("-" * 40 + "\n")
-            f.write(f"Training Period: {self.pipeline.dates_train[0]} to {self.pipeline.dates_train[-1]}\n")
-            f.write(f"Testing Period: {self.pipeline.dates_test[0]} to {self.pipeline.dates_test[-1]}\n")
-            f.write(f"Total Years: {(self.pipeline.dates[-1] - self.pipeline.dates[0]).days / 365.25:.1f}\n\n")
+
+            # Convert numpy datetime64 to pandas datetime for proper handling
+            train_start = pd.to_datetime(self.pipeline.dates_train[0])
+            train_end = pd.to_datetime(self.pipeline.dates_train[-1])
+            test_start = pd.to_datetime(self.pipeline.dates_test[0])
+            test_end = pd.to_datetime(self.pipeline.dates_test[-1])
+
+            f.write(f"Training Period: {train_start.strftime('%Y-%m-%d')} to {train_end.strftime('%Y-%m-%d')}\n")
+            f.write(f"Testing Period: {test_start.strftime('%Y-%m-%d')} to {test_end.strftime('%Y-%m-%d')}\n")
+
+            # Calculate total years properly
+            total_days = (test_end - train_start).days
+            total_years = total_days / 365.25
+            f.write(f"Total Years: {total_years:.1f}\n\n")
 
             # Model performance summary
             f.write("MODEL PERFORMANCE SUMMARY (Test Set):\n")
@@ -535,8 +715,13 @@ class ResultsExporter:
             f.write(f"Test R²: {best_model_metrics['R2']:.4f}\n\n")
 
             f.write("Hyperparameters:\n")
-            for param, value in self.pipeline.best_params[best_model_name].items():
-                f.write(f"  {param}: {value}\n")
+            if best_model_name in self.pipeline.best_params:
+                for param, value in self.pipeline.best_params[best_model_name].items():
+                    # Format the value based on its type
+                    if isinstance(value, float):
+                        f.write(f"  {param}: {value:.6f}\n")
+                    else:
+                        f.write(f"  {param}: {value}\n")
 
             # Overfitting analysis
             f.write("\n" + "=" * 80 + "\n")
@@ -551,11 +736,11 @@ class ResultsExporter:
                 f.write(f"{model_name:15} Train NSE: {train_nse:.4f}, Test NSE: {test_nse:.4f}, Gap: {gap:.4f}")
 
                 if gap > 0.15:
-                    f.write(" ⚠️ Potential overfitting\n")
+                    f.write(" Potential overfitting\n")
                 elif gap < 0.05 and test_nse > 0.95:
-                    f.write(" ⚠️ Suspiciously low gap - check for data leakage\n")
+                    f.write(" Suspiciously low gap - check for data leakage\n")
                 else:
-                    f.write(" ✓ Good generalization\n")
+                    f.write(" Good generalization\n")
 
             # Files generated
             f.write("\n" + "=" * 80 + "\n")

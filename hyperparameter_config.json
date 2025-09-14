@@ -1,0 +1,152 @@
+{
+  "data": {
+    "filepath": "../grid_based_forcing_improved_pet_new/Bengbu_basin_forcing.csv",
+    "flow_threshold": 0.001,
+    "test_size": 0.2,
+    "sequence_length": 30,
+    "random_seed": 42
+  },
+
+  "xgboost": {
+    "search_space": {
+      "n_estimators": [100, 500],
+      "max_depth": [3, 15],
+      "learning_rate": [0.001, 0.3],
+      "subsample": [0.5, 1.0],
+      "colsample_bytree": [0.5, 1.0],
+      "gamma": [0, 1.0],
+      "reg_alpha": [0, 10],
+      "reg_lambda": [0, 10],
+      "min_child_weight": [1, 10]
+    },
+    "fixed_params": {
+      "objective": "reg:squarederror",
+      "random_state": 42,
+      "n_jobs": -1
+    },
+    "optimization": {
+      "n_trials": 100,
+      "cv_folds": 5,
+      "timeout": 600
+    }
+  },
+
+  "random_forest": {
+    "search_space": {
+      "n_estimators": [50, 500],
+      "max_depth": [5, 50],
+      "min_samples_split": [2, 20],
+      "min_samples_leaf": [1, 10],
+      "max_features": ["sqrt", "log2", 0.3, 0.5, 0.7],
+      "bootstrap": [true, false],
+      "max_samples": [0.5, 0.7, 0.9, 1.0]
+    },
+    "fixed_params": {
+      "random_state": 42,
+      "n_jobs": -1
+    },
+    "optimization": {
+      "n_trials": 80,
+      "cv_folds": 5,
+      "timeout": 300
+    }
+  },
+
+  "cubist": {
+    "search_space": {
+      "n_rules": [10, 500],
+      "n_committees": [1, 50],
+      "neighbors": [0, 9],
+"extrapolation": [0.0, 1.0]
+    },
+    "fixed_params": {
+      "random_state": 42,
+      "unbiased": true
+    },
+    "optimization": {
+      "n_trials": 50,
+      "cv_folds": 3,
+      "timeout": 300
+    }
+  },
+
+  "svm": {
+    "search_space": {
+      "kernel": ["rbf", "poly", "sigmoid", "linear"],
+      "C": [0.001, 1000],
+      "gamma": [0.0001, 1],
+      "epsilon": [0.001, 1],
+      "degree": [2, 5],
+      "coef0": [0, 10]
+    },
+    "fixed_params": {
+      "cache_size": 1000,
+      "max_iter": 5000
+    },
+    "optimization": {
+      "n_trials": 50,
+      "cv_folds": 3,
+      "timeout": 600
+    }
+  },
+
+  "lstm": {
+    "search_space": {
+      "n_layers": [2, 4],
+      "sequence_length":[5,7,14, 30, 45, 60],
+      "units_layer_1": [32, 256],
+      "units_layer_2": [16, 128],
+      "units_layer_3": [8, 64],
+      "units_layer_4": [4, 32],
+      "dropout_rate": [0.0, 0.5],
+      "recurrent_dropout": [0.0, 0.3],
+      "dense_units": [8, 64],
+      "learning_rate": [0.0001, 0.01],
+      "batch_size": [16, 64],
+      "activation": ["relu", "tanh"],
+      "use_bidirectional": [true, false],
+      "use_attention": [true, false]
+    },
+    "fixed_params": {
+      "epochs": 100,
+      "patience": 15,
+      "validation_split": 0.2,
+      "reduce_lr_factor": 0.5,
+      "reduce_lr_patience": 7,
+      "min_lr": 1e-7
+    },
+    "optimization": {
+      "max_trials": 30,
+      "executions_per_trial": 1,
+      "directory": "Bengbu_LSTM",
+      "project_name": "lstm_hydro",
+      "overwrite": true
+    }
+  },
+
+  "lightgbm": {
+    "search_space": {
+      "num_leaves": [10, 300],
+      "max_depth": [-1, 20],
+      "learning_rate": [0.001, 0.3],
+      "n_estimators": [50, 500],
+      "min_child_samples": [5, 100],
+      "subsample": [0.5, 1.0],
+      "colsample_bytree": [0.5, 1.0],
+      "reg_alpha": [0, 10],
+      "reg_lambda": [0, 10]
+    },
+    "fixed_params": {
+      "objective": "regression",
+      "metric": "rmse",
+      "random_state": 42,
+      "n_jobs": -1,
+      "verbosity": -1
+    },
+    "optimization": {
+      "n_trials": 100,
+      "cv_folds": 5,
+      "timeout": 300
+    }
+  }
+}
