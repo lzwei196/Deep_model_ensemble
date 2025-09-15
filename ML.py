@@ -14,7 +14,8 @@ from sklearn.svm import SVR
 # Advanced ML
 import xgboost as xgb
 import lightgbm as lgb
-import cubist
+from tcn import TCN
+
 
 # Try to import Cubist, use CatBoost as fallback
 try:
@@ -435,6 +436,233 @@ class AdvancedHydrologicalMLPipeline:
             self.studies['CatBoost'] = study
 
             self._evaluate_model('CatBoost')
+
+    def optimize_tcn(self):
+        """Optimize Temporal Convolutional Network using Optuna"""
+        print("\n" + "=" * 60)
+        print("Optimizing Temporal Convolutional Network (TCN)...")
+        print("=" * 60)
+
+        # Create sequences first (reuse your existing method)
+        sequence_length = self.sequence_length  # Use default
+        X_train_seq, y_train_seq = self.create_lstm_sequences(
+            self.X_train_scaled, self.y_train_scaled, sequence_length
+        )
+        X_test_seq, y_test_seq = self.create_lstm_sequences(
+            self.X_test_scaled, self.y_test_scaled, sequence_length
+        )
+
+        def objective(trial):
+            # TCN-specific hyperparameters
+            nb_filters = trial.suggest_int('nb_filters', 32, 128, step=32)
+            kernel_size = trial.suggest_int('kernel_size', 2, 7)
+            nb_stacks = trial.suggest_int('nb_stacks', 1, 2)
+
+            # Dilations - create exponential dilations
+            n_dilations = trial.suggest_int('n_dilations', 3, 6)
+            dilations = [2 ** i for i in range(n_dilations)]  # [1, 2, 4, 8, 16, ...]
+
+            dropout_rate = trial.suggest_float('dropout_rate', 0.0, 0.5)
+            use_skip_connections = trial.suggest_categorical('use_skip_connections', [True, False])
+            use_batch_norm = trial.suggest_categorical('use_batch_norm', [True, False])
+
+            # Dense layer params
+            dense_units = trial.suggest_int('dense_units', 32, 128, step=32)
+            dense_dropout = trial.suggest_float('dense_dropout', 0.0, 0.5)
+            learning_rate = trial.suggest_float('learning_rate', 0.0001, 0.01, log=True)
+
+            # Build TCN model
+            input_layer = Input(shape=(sequence_length, X_train_seq.shape[2]))
+
+            # TCN layer
+            tcn_out = TCN(
+                nb_filters=nb_filters,
+                kernel_size=kernel_size,
+                nb_stacks=nb_stacks,
+                dilations=dilations,
+                padding='causal',
+                use_skip_connections=use_skip_connections,
+                dropout_rate=dropout_rate,
+                return_sequences=False,  # We want single output
+                activation='relu',
+                kernel_initializer='he_normal',
+                use_batch_norm=use_batch_norm,
+                use_layer_norm=False
+            )(input_layer)
+
+            # Additional dense layers
+            x = Dense(dense_units, activation='relu')(tcn_out)
+            x = Dropout(dense_dropout)(x)
+
+            # Output layer
+            output = Dense(1)(x)
+
+            # Create and compile model
+            model = Model(inputs=[input_layer], outputs=[output])
+            model.compile(
+                optimizer=Adam(learning_rate=learning_rate),
+                loss='mse',
+                metrics=['mae']
+            )
+
+            # Train model
+            history = model.fit(
+                X_train_seq, y_train_seq,
+                epochs=100,
+                batch_size=32,
+                validation_split=0.2,
+                verbose=0,
+                callbacks=[
+                    EarlyStopping(
+                        monitor='val_loss',
+                        patience=15,
+                        restore_best_weights=True
+                    ),
+                    ReduceLROnPlateau(
+                        monitor='val_loss',
+                        factor=0.5,
+                        patience=7,
+                        min_lr=1e-7
+                    )
+                ]
+            )
+
+            # Return best validation loss
+            return min(history.history['val_loss'])
+
+        # Run Optuna optimization
+        study = optuna.create_study(
+            direction='minimize',
+            sampler=optuna.samplers.TPESampler(seed=42)
+        )
+
+        study.optimize(
+            objective,
+            n_trials=self.config.get('tcn', 'optimization', 'n_trials') if hasattr(self, 'config') else 30,
+            timeout=600,  # 10 minutes timeout
+            show_progress_bar=True
+        )
+
+        # Train final model with best parameters
+        best_params = study.best_params
+        print(f"\nBest TCN parameters found:")
+        for key, value in best_params.items():
+            print(f"  {key}: {value}")
+
+        # Rebuild model with best parameters
+        n_dilations = best_params['n_dilations']
+        dilations = [2 ** i for i in range(n_dilations)]
+
+        input_layer = Input(shape=(sequence_length, X_train_seq.shape[2]))
+
+        tcn_out = TCN(
+            nb_filters=best_params['nb_filters'],
+            kernel_size=best_params['kernel_size'],
+            nb_stacks=best_params['nb_stacks'],
+            dilations=dilations,
+            padding='causal',
+            use_skip_connections=best_params['use_skip_connections'],
+            dropout_rate=best_params['dropout_rate'],
+            return_sequences=False,
+            activation='relu',
+            kernel_initializer='he_normal',
+            use_batch_norm=best_params['use_batch_norm']
+        )(input_layer)
+
+        x = Dense(best_params['dense_units'], activation='relu')(tcn_out)
+        x = Dropout(best_params['dense_dropout'])(x)
+        output = Dense(1)(x)
+
+        best_model = Model(inputs=[input_layer], outputs=[output])
+        best_model.compile(
+            optimizer=Adam(learning_rate=best_params['learning_rate']),
+            loss='mse',
+            metrics=['mae']
+        )
+
+        # Train the final model
+        print("\nTraining final TCN model...")
+        history = best_model.fit(
+            X_train_seq, y_train_seq,
+            epochs=150,
+            batch_size=32,
+            validation_split=0.2,
+            verbose=1,
+            callbacks=[
+                EarlyStopping(
+                    monitor='val_loss',
+                    patience=20,
+                    restore_best_weights=True
+                ),
+                ReduceLROnPlateau(
+                    monitor='val_loss',
+                    factor=0.5,
+                    patience=10,
+                    min_lr=1e-7
+                )
+            ]
+        )
+
+        # Store model and results
+        self.models['TCN'] = best_model
+        self.best_params['TCN'] = best_params
+        self.studies['TCN'] = study
+
+        # Store sequences for later use
+        self.X_train_seq_tcn = X_train_seq
+        self.y_train_seq_tcn = y_train_seq
+        self.X_test_seq_tcn = X_test_seq
+        self.y_test_seq_tcn = y_test_seq
+
+        # Evaluate model
+        print("\nEvaluating TCN model...")
+
+        # Make predictions
+        y_pred_train_scaled = best_model.predict(X_train_seq, verbose=0).ravel()
+        y_pred_test_scaled = best_model.predict(X_test_seq, verbose=0).ravel()
+
+        # Inverse transform
+        y_pred_train = self.scaler_y.inverse_transform(y_pred_train_scaled.reshape(-1, 1)).ravel()
+        y_pred_test = self.scaler_y.inverse_transform(y_pred_test_scaled.reshape(-1, 1)).ravel()
+
+        # Original y values for sequences
+        y_train_tcn = self.scaler_y.inverse_transform(y_train_seq.reshape(-1, 1)).ravel()
+        y_test_tcn = self.scaler_y.inverse_transform(y_test_seq.reshape(-1, 1)).ravel()
+
+        # Apply physical constraints
+        y_pred_train = self.post_process_predictions(y_pred_train, "TCN_train")
+        y_pred_test = self.post_process_predictions(y_pred_test, "TCN_test")
+
+        # Calculate metrics
+        train_metrics = self.calculate_metrics(y_train_tcn, y_pred_train)
+        test_metrics = self.calculate_metrics(y_test_tcn, y_pred_test)
+
+        # Store results
+        self.results['TCN'] = {
+            'train_metrics': train_metrics,
+            'test_metrics': test_metrics,
+            'y_pred_train': y_pred_train,
+            'y_pred_test': y_pred_test,
+            'y_train_seq': y_train_tcn,
+            'y_test_seq': y_test_tcn,
+            'sequence_length': sequence_length,
+            'receptive_field': self._calculate_tcn_receptive_field(best_params)
+        }
+
+        print(f"Test NSE: {test_metrics['NSE']:.4f}, R²: {test_metrics['R2']:.4f}")
+        print(f"Receptive field: {self.results['TCN']['receptive_field']} timesteps")
+
+    def _calculate_tcn_receptive_field(self, params):
+        """Calculate TCN receptive field"""
+        kernel_size = params['kernel_size']
+        nb_stacks = params['nb_stacks']
+        n_dilations = params['n_dilations']
+
+        # Receptive field = 1 + 2 * (kernel_size - 1) * nb_stacks * sum(dilations)
+        dilations_sum = sum([2 ** i for i in range(n_dilations)])
+        receptive_field = 1 + 2 * (kernel_size - 1) * nb_stacks * dilations_sum
+
+        return receptive_field
 
     def optimize_xgboost(self):
         """Optimize XGBoost using Optuna"""
@@ -1071,6 +1299,7 @@ class AdvancedHydrologicalMLPipeline:
         self.optimize_cubist()  # Now included!
         self.optimize_svm()
         self.optimize_lstm()
+        self.optimize_tcn()
 
     def _evaluate_model(self, model_name):
         """Evaluate a trained model with physical constraints applied"""

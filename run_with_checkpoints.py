@@ -49,7 +49,6 @@ class EnhancedTrainingPipeline:
             os.makedirs(dir_path, exist_ok=True)
 
         print(f"Using site name: {self.site_name}")
-
         # Initialize pipeline
         self.pipeline = EnhancedMLPipeline(
             config_path=self.config_file,

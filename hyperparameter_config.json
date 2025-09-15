@@ -1,6 +1,6 @@
 {
   "data": {
-    "filepath": "../grid_based_forcing_improved_pet_new/Bengbu_basin_forcing.csv",
+    "filepath": "../grid_based_forcing_improved_pet_new/Bantai_basin_forcing.csv",
     "flow_threshold": 0.001,
     "test_size": 0.2,
     "sequence_length": 30,
@@ -118,7 +118,7 @@
     "optimization": {
       "max_trials": 30,
       "executions_per_trial": 1,
-      "directory": "Bengbu_LSTM",
+      "directory": "Bantai_LSTM",
       "project_name": "lstm_hydro",
       "overwrite": true
     }
@@ -147,6 +147,31 @@
       "n_trials": 100,
       "cv_folds": 5,
       "timeout": 300
-    }
+    },
+    "tcn": {
+  "search_space": {
+    "nb_filters": [32, 128],
+    "kernel_size": [2, 7],
+    "nb_stacks": [1, 2],
+    "n_dilations": [3, 6],
+    "dropout_rate": [0.0, 0.5],
+    "use_skip_connections": [true, false],
+    "use_batch_norm": [true, false],
+    "dense_units": [32, 128],
+    "dense_dropout": [0.0, 0.5],
+    "learning_rate": [0.0001, 0.01]
+  },
+  "fixed_params": {
+    "padding": "causal",
+    "activation": "relu",
+    "kernel_initializer": "he_normal"
+  },
+  "optimization": {
+    "n_trials": 30,
+    "timeout": 600,
+    "max_epochs": 150,
+    "patience": 20
+  }
+}
   }
 }

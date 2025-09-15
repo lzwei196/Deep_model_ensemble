@@ -3,7 +3,7 @@
 # Select which models to train and their priorities
 
 # Site configuration
-site_name: Bengbu  # Change this to your site name
+site_name: Bantai  # Change this to your site name
 
 # Traditional ML Models
 traditional_models:
@@ -40,6 +40,9 @@ deep_learning_models:
   GRU:
     enabled: false
     priority: 10
+  TCN:
+    enabled: true
+    priority: 7
 
 hydrodl_models:
   HydroDL_LSTM:        # ✓ Matches class name

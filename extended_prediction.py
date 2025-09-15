@@ -121,7 +121,7 @@ class ExtendedPredictor:
         return True
 
     def generate_predictions(self):
-        """Generate predictions for all models"""
+        """Generate predictions for all models - FIXED VERSION"""
         print("\n" + "=" * 60)
         print("GENERATING PREDICTIONS")
         print("=" * 60)
@@ -133,7 +133,7 @@ class ExtendedPredictor:
 
             try:
                 if model_name == 'LSTM':
-                    pred = self._predict_lstm(model)
+                    pred = self._predict_lstm_fixed(model)
                 elif model_name == 'SVM':
                     pred = self._predict_svm(model)
                 else:
@@ -142,51 +142,43 @@ class ExtendedPredictor:
 
                 predictions[model_name] = pred
 
-                # DEBUG: Check prediction values
+                # Check prediction values
                 valid_preds = ~np.isnan(pred)
                 if valid_preds.sum() > 0:
-                    print(
-                        f"  DEBUG: Prediction stats - Min: {np.min(pred[valid_preds]):.2f}, Max: {np.max(pred[valid_preds]):.2f}, Mean: {np.mean(pred[valid_preds]):.2f}")
+                    print(f"  Prediction stats - Min: {np.min(pred[valid_preds]):.2f}, "
+                          f"Max: {np.max(pred[valid_preds]):.2f}, "
+                          f"Mean: {np.mean(pred[valid_preds]):.2f}")
+                    print(f"  Valid predictions: {valid_preds.sum()} out of {len(pred)}")
 
-                    # Check if predictions are reasonable
-                    if np.max(pred[valid_preds]) > 20000:  # Very high flow values
+                    # Check for unreasonable values
+                    if np.max(pred[valid_preds]) > 20000:
                         print(f"  ⚠️  WARNING: Extremely high predictions detected!")
-
-                    if np.min(pred[valid_preds]) < -1000:  # Negative flow values
+                    if np.min(pred[valid_preds]) < -1000:
                         print(f"  ⚠️  WARNING: Negative flow predictions detected!")
+                else:
+                    print(f"  ⚠️  WARNING: No valid predictions from {model_name}!")
 
-                # Show stats
-                future_mask = ~self.has_observed
-                future_preds = pred[future_mask & valid_preds]
-
-                print(f"  ✓ Total predictions: {valid_preds.sum()}")
-                print(f"  ✓ Future predictions: {len(future_preds)}")
-                if len(future_preds) > 0:
-                    print(f"    Future range: {np.min(future_preds):.2f} to {np.max(future_preds):.2f} m³/s")
-
-                # Validate observed period performance
+                # Validate on observed period
                 if self.has_observed.sum() > 0:
-                    obs_true = self.y_observed[self.has_observed]
-                    obs_pred = pred[self.has_observed]
+                    obs_mask = self.has_observed
+                    obs_true = self.y_observed[obs_mask]
+                    obs_pred = pred[obs_mask]
                     valid_obs = ~np.isnan(obs_true) & ~np.isnan(obs_pred)
 
-                    if valid_obs.sum() > 5:  # Need minimum samples
+                    if valid_obs.sum() > 5:
                         obs_true_clean = obs_true[valid_obs]
                         obs_pred_clean = obs_pred[valid_obs]
 
-                        # DEBUG: Check observed period predictions
-                        print(
-                            f"  DEBUG: Observed period - True range: {np.min(obs_true_clean):.2f} to {np.max(obs_true_clean):.2f}")
-                        print(
-                            f"  DEBUG: Observed period - Pred range: {np.min(obs_pred_clean):.2f} to {np.max(obs_pred_clean):.2f}")
-
-                        # Calculate NSE for validation
+                        # Calculate NSE
                         ss_res = np.sum((obs_true_clean - obs_pred_clean) ** 2)
                         ss_tot = np.sum((obs_true_clean - np.mean(obs_true_clean)) ** 2)
                         nse = 1 - (ss_res / ss_tot)
                         rmse = np.sqrt(np.mean((obs_true_clean - obs_pred_clean) ** 2))
 
-                        print(f"    Observed period performance: NSE={nse:.3f}, RMSE={rmse:.2f}")
+                        print(f"  Observed period: NSE={nse:.3f}, RMSE={rmse:.2f}, "
+                              f"Valid points={valid_obs.sum()}")
+                    else:
+                        print(f"  Observed period: Not enough valid points for evaluation")
 
             except Exception as e:
                 print(f"  ✗ Failed: {str(e)}")
@@ -195,63 +187,101 @@ class ExtendedPredictor:
                 predictions[model_name] = np.full(len(self.X_full_scaled), np.nan)
 
         self.predictions = predictions
-
-        # ADDITIONAL DEBUG: Compare with original training data
-        print(f"\nDEBUG: Data comparison:")
-        print(
-            f"Original observed flow range: {np.min(self.y_observed[~np.isnan(self.y_observed)]):.2f} to {np.max(self.y_observed[~np.isnan(self.y_observed)]):.2f}")
-        if hasattr(self.pipeline, 'y_train'):
-            print(f"Training data range: {np.min(self.pipeline.y_train):.2f} to {np.max(self.pipeline.y_train):.2f}")
-        if hasattr(self.pipeline, 'y_test'):
-            print(f"Test data range: {np.min(self.pipeline.y_test):.2f} to {np.max(self.pipeline.y_test):.2f}")
-
         return predictions
 
-    def _predict_lstm(self, model):
-        """LSTM prediction with sequences using saved configuration"""
+    def _predict_lstm_fixed(self, model):
+        """
+        LSTM prediction with proper sequence handling and alignment
+        This version correctly handles the sequence generation and prediction placement
+        """
 
-        # Use sequence length from config if available
-        if self.config and "model_specific" in self.config:
-            sequence_length = self.config["model_specific"]["sequence_length"]
+        # Get sequence length
+        if self.config :
+            sequence_length = self.config['LSTM']['sequence_length']
             print(f"    Using config sequence length: {sequence_length}")
-        elif hasattr(self.pipeline, 'X_train_seq') and self.pipeline.X_train_seq is not None:
-            sequence_length = self.pipeline.X_train_seq.shape[1]
-            print(f"    Using training sequence length: {sequence_length}")
-        elif 'LSTM' in self.pipeline.results and 'sequence_length' in self.pipeline.results['LSTM']:
-            sequence_length = self.pipeline.results['LSTM']['sequence_length']
-            print(f"    Using stored sequence length: {sequence_length}")
+        elif hasattr(self.pipeline, 'sequence_length'):
+            sequence_length = self.pipeline.sequence_length
+            print(f"    Using pipeline sequence length: {sequence_length}")
         else:
-            sequence_length = getattr(self.pipeline, 'sequence_length', 10)
+            sequence_length = 30  # Your data shows 30
             print(f"    Using default sequence length: {sequence_length}")
 
-        predictions = np.full(len(self.X_full_scaled), np.nan)
+        n_samples = len(self.X_full_scaled)
+        n_features = self.X_full_scaled.shape[1]
 
-        if len(self.X_full_scaled) >= sequence_length:
-            X_seq = []
-            valid_indices = []
+        print(f"    Data shape: {n_samples} samples, {n_features} features")
 
-            for i in range(len(self.X_full_scaled) - sequence_length + 1):
-                X_seq.append(self.X_full_scaled[i:i + sequence_length])
-                valid_indices.append(i + sequence_length - 1)
+        # Initialize predictions with NaN
+        predictions = np.full(n_samples, np.nan)
 
-            if len(X_seq) > 0:
-                X_seq = np.array(X_seq)
-                print(f"    LSTM input shape: {X_seq.shape}")
-                print(f"    Model expects: {model.input_shape}")
+        # Check if we have enough data
+        if n_samples < sequence_length:
+            print(f"    ERROR: Not enough data ({n_samples} < {sequence_length})")
+            return predictions
 
-                # Apply physical constraints to predictions
-                y_pred_scaled = model.predict(X_seq, verbose=0).ravel()
-                y_pred_raw = self.pipeline.scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
+        # Create sequences using the same approach as training
+        X_sequences = []
+        sequence_indices = []
 
-                # Apply physical constraints (no negative flows)
-                y_pred = np.maximum(y_pred_raw, 0)  # Force non-negative
+        for i in range(sequence_length, n_samples + 1):
+            # Extract sequence
+            seq = self.X_full_scaled[i - sequence_length:i]
+            X_sequences.append(seq)
+            # The prediction will be for index i-1 (last element of the sequence)
+            sequence_indices.append(i - 1)
 
-                # Log corrections
-                negative_count = np.sum(y_pred_raw < 0)
-                if negative_count > 0:
-                    print(f"    Corrected {negative_count} negative LSTM predictions")
+        X_sequences = np.array(X_sequences)
+        print(f"    Created {len(X_sequences)} sequences of shape {X_sequences.shape}")
 
-                predictions[valid_indices] = y_pred
+        # Make predictions
+        try:
+            # Ensure correct shape (samples, timesteps, features)
+            if len(X_sequences.shape) == 2:
+                X_sequences = X_sequences.reshape(len(X_sequences), sequence_length, n_features)
+
+            print(f"    LSTM input shape: {X_sequences.shape}")
+            print(f"    Model expects: {model.input_shape}")
+
+            # Get predictions
+            y_pred_scaled = model.predict(X_sequences, verbose=0)
+
+            # Handle different output shapes
+            if len(y_pred_scaled.shape) > 1:
+                y_pred_scaled = y_pred_scaled.ravel()
+
+            print(f"    Raw predictions shape: {y_pred_scaled.shape}")
+
+            # Inverse transform
+            y_pred_raw = self.pipeline.scaler_y.inverse_transform(
+                y_pred_scaled.reshape(-1, 1)
+            ).ravel()
+
+            # Apply physical constraints
+            y_pred = np.maximum(y_pred_raw, 0)
+
+            # Count corrections
+            negative_count = np.sum(y_pred_raw < 0)
+            if negative_count > 0:
+                print(f"    Corrected {negative_count} negative predictions")
+
+            # Place predictions at correct indices
+            for idx, pred_value in zip(sequence_indices, y_pred):
+                predictions[idx] = pred_value
+
+            # Summary
+            valid_count = np.sum(~np.isnan(predictions))
+            print(f"    Successfully placed {valid_count} predictions")
+            print(f"    First {sequence_length} positions have no prediction (need history)")
+
+            # Check prediction distribution
+            if valid_count > 0:
+                valid_preds = predictions[~np.isnan(predictions)]
+                print(f"    Prediction range: {np.min(valid_preds):.2f} to {np.max(valid_preds):.2f}")
+
+        except Exception as e:
+            print(f"    ERROR in LSTM prediction: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
         return predictions
 
@@ -262,7 +292,7 @@ class ExtendedPredictor:
         return y_pred
 
     def export_predictions(self, output_dir=None):
-        """Export predictions to CSV and create plots"""
+        """Export predictions to CSV with proper LSTM handling"""
         if output_dir is None:
             output_dir = 'extended_predictions_clean'
 
@@ -281,15 +311,24 @@ class ExtendedPredictor:
 
         # Add model predictions
         for model_name, pred in self.predictions.items():
-            results_df[f'{model_name}_predicted'] = pred
+            col_name = f'{model_name}_predicted'
+            results_df[col_name] = pred
 
-        # Calculate ensemble predictions
+            # Check how many valid predictions for this model
+            valid_count = results_df[col_name].notna().sum()
+            print(f"{model_name}: {valid_count} valid predictions out of {len(results_df)}")
+
+        # Calculate ensemble predictions (excluding NaN)
         pred_cols = [col for col in results_df.columns if '_predicted' in col]
-        if len(pred_cols) > 1:
-            results_df['ensemble_mean'] = results_df[pred_cols].mean(axis=1, skipna=True)
-            results_df['ensemble_median'] = results_df[pred_cols].median(axis=1, skipna=True)
-        elif len(pred_cols) == 1:
-            results_df['ensemble_mean'] = results_df[pred_cols[0]]
+
+        # For ensemble, only use models with valid predictions at each timestep
+        results_df['ensemble_mean'] = results_df[pred_cols].mean(axis=1, skipna=True)
+        results_df['ensemble_median'] = results_df[pred_cols].median(axis=1, skipna=True)
+        results_df['ensemble_count'] = results_df[pred_cols].notna().sum(axis=1)
+
+        print(f"\nEnsemble statistics:")
+        print(f"  Points with all {len(pred_cols)} models: {(results_df['ensemble_count'] == len(pred_cols)).sum()}")
+        print(f"  Points with at least 1 model: {(results_df['ensemble_count'] > 0).sum()}")
 
         # Add period indicator
         results_df['period'] = results_df['has_observed'].map({True: 'observed', False: 'predicted'})
@@ -297,33 +336,34 @@ class ExtendedPredictor:
         # Save main results
         csv_file = os.path.join(output_dir, 'extended_predictions_clean.csv')
         results_df.to_csv(csv_file, index=False)
-        print(f"Saved: {csv_file}")
+        print(f"\nSaved: {csv_file}")
 
-        # Save separate files for observed and predicted periods
+        # Save validation metrics
         if self.has_observed.sum() > 0:
             obs_df = results_df[results_df['has_observed']].copy()
 
-            # Add performance metrics for observed period
+            # Calculate errors for each model
             for col in pred_cols:
                 if col in obs_df.columns:
-                    obs_df[f'{col}_error'] = obs_df[col] - obs_df['observed_flow']
-                    obs_df[f'{col}_abs_error'] = np.abs(obs_df[f'{col}_error'])
+                    # Only calculate error where both observed and predicted are valid
+                    valid_mask = obs_df[col].notna() & obs_df['observed_flow'].notna()
+                    obs_df.loc[valid_mask, f'{col}_error'] = (
+                            obs_df.loc[valid_mask, col] - obs_df.loc[valid_mask, 'observed_flow']
+                    )
+                    obs_df.loc[valid_mask, f'{col}_abs_error'] = np.abs(
+                        obs_df.loc[valid_mask, f'{col}_error']
+                    )
 
             obs_file = os.path.join(output_dir, 'observed_period_validation.csv')
             obs_df.to_csv(obs_file, index=False)
             print(f"Saved: {obs_file}")
 
+        # Save future predictions
         if (~self.has_observed).sum() > 0:
             pred_df = results_df[~results_df['has_observed']].copy()
             pred_file = os.path.join(output_dir, 'future_predictions_clean.csv')
             pred_df.to_csv(pred_file, index=False)
             print(f"Saved: {pred_file}")
-
-        # Create visualization
-        self._create_clean_plots(results_df, output_dir)
-
-        # Print comprehensive summary
-        self._print_comprehensive_summary(results_df)
 
         return results_df
 
@@ -390,204 +430,10 @@ class ExtendedPredictor:
                 if mean_std > future_data['ensemble_mean'].mean() * 0.2:
                     print(f"  ⚠️  High model disagreement - interpret with caution")
 
-    def _create_clean_plots(self, results_df, output_dir):
-        """Create clean visualization plots"""
-        print("\nCreating clean prediction plots...")
-
-        # Create comprehensive figure
-        fig = plt.figure(figsize=(18, 14))
-        gs = plt.GridSpec(4, 2, hspace=0.35, wspace=0.25)
-
-        # 1. Full time series overview
-        ax1 = plt.subplot(gs[0, :])
-        obs_data = results_df[results_df['has_observed']]
-        pred_data = results_df[~results_df['has_observed']]
-
-        if len(obs_data) > 0:
-            ax1.plot(obs_data['date'], obs_data['observed_flow'], 'b-',
-                     label='Observed', linewidth=2, alpha=0.8)
-
-        if len(pred_data) > 0 and 'ensemble_mean' in pred_data.columns:
-            ax1.plot(pred_data['date'], pred_data['ensemble_mean'], 'r-',
-                     label='Future Predictions', linewidth=2, alpha=0.8)
-
-        # Mark transition
-        if self.has_observed.sum() > 0:
-            transition_date = obs_data['date'].max()
-            ax1.axvline(x=transition_date, color='gray', linestyle='--', alpha=0.7,
-                        label='End of Observed Data')
-
-        ax1.set_title('Clean ML Pipeline: Extended Flow Predictions', fontsize=16, fontweight='bold')
-        ax1.set_ylabel('Flow (m³/s)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        # 2. Observed vs Predicted validation scatter
-        ax2 = plt.subplot(gs[1, 0])
-        if len(obs_data) > 0 and 'ensemble_mean' in obs_data.columns:
-            obs_true = obs_data['observed_flow']
-            obs_pred = obs_data['ensemble_mean']
-
-            valid_mask = ~(np.isnan(obs_true) | np.isnan(obs_pred))
-            if valid_mask.sum() > 0:
-                obs_true_clean = obs_true[valid_mask]
-                obs_pred_clean = obs_pred[valid_mask]
-
-                ax2.scatter(obs_true_clean, obs_pred_clean, alpha=0.6, s=25)
-
-                # Add 1:1 line
-                min_val = min(obs_true_clean.min(), obs_pred_clean.min())
-                max_val = max(obs_true_clean.max(), obs_pred_clean.max())
-                ax2.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, linewidth=2)
-
-                # Calculate and show R²
-                r2 = np.corrcoef(obs_true_clean, obs_pred_clean)[0, 1] ** 2
-                ax2.text(0.05, 0.95, f'R² = {r2:.3f}', transform=ax2.transAxes,
-                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=12)
-
-        ax2.set_title('Model Validation: Observed vs Predicted')
-        ax2.set_xlabel('Observed Flow (m³/s)')
-        ax2.set_ylabel('Predicted Flow (m³/s)')
-        ax2.grid(True, alpha=0.3)
-
-        # 3. Residuals analysis
-        ax3 = plt.subplot(gs[1, 1])
-        if len(obs_data) > 0 and 'ensemble_mean' in obs_data.columns:
-            residuals = obs_data['ensemble_mean'] - obs_data['observed_flow']
-            valid_residuals = residuals.dropna()
-
-            if len(valid_residuals) > 0:
-                ax3.scatter(obs_data.loc[residuals.notna(), 'observed_flow'],
-                            valid_residuals, alpha=0.6, s=25)
-                ax3.axhline(y=0, color='r', linestyle='--', alpha=0.8, linewidth=2)
-
-                rmse = np.sqrt(np.mean(valid_residuals ** 2))
-                ax3.text(0.05, 0.95, f'RMSE = {rmse:.2f}', transform=ax3.transAxes,
-                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=12)
-
-        ax3.set_title('Residuals Analysis')
-        ax3.set_xlabel('Observed Flow (m³/s)')
-        ax3.set_ylabel('Residual (m³/s)')
-        ax3.grid(True, alpha=0.3)
-
-        # 4. Future predictions: Individual models
-        ax4 = plt.subplot(gs[2, :])
-        if len(pred_data) > 0:
-            colors = ['red', 'green', 'orange', 'purple', 'brown', 'pink']
-            model_count = 0
-
-            for model_name in self.predictions.keys():
-                col = f'{model_name}_predicted'
-                if col in pred_data.columns and not pred_data[col].isna().all():
-                    ax4.plot(pred_data['date'], pred_data[col],
-                             color=colors[model_count % len(colors)],
-                             label=model_name, alpha=0.6, linewidth=1.5)
-                    model_count += 1
-
-            if 'ensemble_mean' in pred_data.columns:
-                ax4.plot(pred_data['date'], pred_data['ensemble_mean'], 'k-',
-                         label='Ensemble Mean', linewidth=3, alpha=0.9)
-
-            # Add uncertainty band if multiple models
-            pred_model_cols = [col for col in pred_data.columns if '_predicted' in col and 'ensemble' not in col]
-            if len(pred_model_cols) > 1:
-                lower = pred_data[pred_model_cols].quantile(0.25, axis=1)
-                upper = pred_data[pred_model_cols].quantile(0.75, axis=1)
-                ax4.fill_between(pred_data['date'], lower, upper,
-                                 alpha=0.2, color='gray', label='Model Uncertainty (IQR)')
-
-        ax4.set_title('Future Period: Individual Model Predictions & Uncertainty')
-        ax4.set_ylabel('Flow (m³/s)')
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
-
-        # 5. Monthly climatology comparison
-        ax5 = plt.subplot(gs[3, 0])
-        if len(results_df) > 0:
-            results_df_copy = results_df.copy()
-            results_df_copy['month'] = pd.to_datetime(results_df_copy['date']).dt.month
-
-            monthly_obs = results_df_copy[results_df_copy['has_observed']].groupby('month')['observed_flow'].mean()
-
-            months = range(1, 13)
-            month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-
-            if len(monthly_obs) > 0:
-                ax5.plot(months, [monthly_obs.get(m, np.nan) for m in months],
-                         'b-o', label='Observed', linewidth=2, markersize=6)
-
-            if len(pred_data) > 0 and 'ensemble_mean' in results_df_copy.columns:
-                monthly_pred = results_df_copy[~results_df_copy['has_observed']].groupby('month')[
-                    'ensemble_mean'].mean()
-                if len(monthly_pred) > 0:
-                    ax5.plot(months, [monthly_pred.get(m, np.nan) for m in months],
-                             'r-o', label='Predicted', linewidth=2, markersize=6)
-
-        ax5.set_title('Monthly Flow Climatology')
-        ax5.set_xlabel('Month')
-        ax5.set_ylabel('Mean Flow (m³/s)')
-        ax5.set_xticks(months)
-        ax5.set_xticklabels(month_names, rotation=45)
-        ax5.legend()
-        ax5.grid(True, alpha=0.3)
-
-        # 6. Model performance comparison
-        ax6 = plt.subplot(gs[3, 1])
-        if len(obs_data) > 0:
-            model_names = []
-            nse_values = []
-
-            for model_name in self.predictions.keys():
-                col = f'{model_name}_predicted'
-                if col in obs_data.columns:
-                    obs_true = obs_data['observed_flow']
-                    obs_pred = obs_data[col]
-
-                    valid_mask = ~(np.isnan(obs_true) | np.isnan(obs_pred))
-                    if valid_mask.sum() > 5:
-                        obs_true_clean = obs_true[valid_mask]
-                        obs_pred_clean = obs_pred[valid_mask]
-
-                        # Calculate NSE
-                        ss_res = np.sum((obs_true_clean - obs_pred_clean) ** 2)
-                        ss_tot = np.sum((obs_true_clean - np.mean(obs_true_clean)) ** 2)
-                        nse = 1 - (ss_res / ss_tot)
-
-                        model_names.append(model_name)
-                        nse_values.append(nse)
-
-            if model_names:
-                colors_bar = plt.cm.viridis(np.linspace(0, 1, len(model_names)))
-                bars = ax6.bar(model_names, nse_values, color=colors_bar, alpha=0.8)
-
-                # Add value labels on bars
-                for bar, nse in zip(bars, nse_values):
-                    height = bar.get_height()
-                    ax6.text(bar.get_x() + bar.get_width() / 2., height + 0.01,
-                             f'{nse:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
-
-        ax6.set_title('Model Performance (NSE on Observed Period)')
-        ax6.set_ylabel('Nash-Sutcliffe Efficiency')
-        ax6.set_ylim(0, 1)
-        ax6.tick_params(axis='x', rotation=45)
-        ax6.grid(True, alpha=0.3, axis='y')
-
-        plt.suptitle(
-            'Clean ML Pipeline: Extended Hydrological Predictions Analysis\n(No Flow-Based Features - Suitable for True Future Prediction)',
-            fontsize=18, y=0.98)
-
-        # Save plot
-        plot_file = os.path.join(output_dir, 'clean_extended_predictions_analysis.png')
-        plt.savefig(plot_file, dpi=300, bbox_inches='tight')
-        plt.close()
-
-        print(f"Saved: {plot_file}")
-
 
 def load_best_model_config(results_dir):
     """Load best model configuration from results directory"""
-    config_file = os.path.join(results_dir, 'best_model_config.json')
+    config_file = os.path.join(results_dir, 'best_parameters.json')
 
     if not os.path.exists(config_file):
         # Fallback to simple lookup
