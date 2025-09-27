@@ -411,7 +411,7 @@ class EnhancedTrainingPipeline:
                 extended_results = run_extended_predictions(
                     self.pipeline,
                     output_dir=f'{self.site_name}_extended_predictions',
-                    results_dir=self.results_dir  # This contains best_model_config.json
+                    site_name=self.site_name  # This contains best_model_config.json
                 )
                 print(f"Extended predictions saved to {self.site_name}_extended_predictions/")
         else:

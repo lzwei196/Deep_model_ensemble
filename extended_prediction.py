@@ -1,6 +1,6 @@
-# extended_prediction.py
 """
 Extended prediction for complete forcing data - works with clean ML pipeline (no flow features)
+Fixed version: loads config from {site}_saved_models/best_parameters.json
 """
 
 import os
@@ -13,28 +13,55 @@ import json
 class ExtendedPredictor:
     """Generate predictions for full period using clean ML pipeline (no flow-based features)"""
 
-    def __init__(self, pipeline, results_dir=None):
+    def __init__(self, pipeline, site_name=None, results_dir=None):
         self.pipeline = pipeline
+        self.site_name = site_name
         self.results_dir = results_dir
 
-        # Load best model configuration if results_dir provided
-        if results_dir and os.path.exists(results_dir):
-            try:
-                self.config = load_best_model_config(results_dir)
-                self.best_model_name = self.config["best_model"]["name"]
-                print(f"Loaded configuration - Best model: {self.best_model_name}")
+        # Load best model configuration from saved_models directory
+        if site_name:
+            saved_models_dir = f"{site_name}_saved_models"
+            config_path = os.path.join(saved_models_dir, 'best_parameters.json')
 
-                if self.best_model_name == 'LSTM':
-                    self.sequence_length = self.config["model_specific"]["sequence_length"]
-                    print(f"LSTM sequence length: {self.sequence_length}")
-                else:
-                    self.sequence_length = 0
-            except Exception as e:
-                print(f"Warning: Could not load model config: {e}")
+            print(f'Looking for config at: {config_path}')
+
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        self.config = json.load(f)
+
+                    # Determine best model from config (you may need to add logic here)
+                    # For now, we'll look for a best_model key or use all models
+                    if "best_model" in self.config:
+                        self.best_model_name = self.config["best_model"]["name"]
+                    else:
+                        # If no explicit best model, you might want to determine it
+                        # based on validation scores or use ensemble
+                        self.best_model_name = None
+                        print("No explicit best model in config, will use ensemble")
+
+                    # Get LSTM sequence length if LSTM is present
+                    if 'LSTM' in self.config:
+                        self.sequence_length = self.config["LSTM"].get("sequence_length", 45)
+                        print(f"LSTM sequence length from config: {self.sequence_length}")
+                    else:
+                        self.sequence_length = 0
+
+                    print(f"Successfully loaded configuration from {config_path}")
+                    print(f"Available models in config: {list(self.config.keys())}")
+
+                except Exception as e:
+                    print(f"Warning: Could not load model config: {e}")
+                    self.config = None
+                    self.best_model_name = None
+                    self.sequence_length = getattr(pipeline, 'sequence_length', 10)
+            else:
+                print(f"Config file not found at {config_path}")
                 self.config = None
                 self.best_model_name = None
                 self.sequence_length = getattr(pipeline, 'sequence_length', 10)
         else:
+            print("No site name provided, cannot load saved model config")
             self.config = None
             self.best_model_name = None
             self.sequence_length = getattr(pipeline, 'sequence_length', 10)
@@ -195,9 +222,9 @@ class ExtendedPredictor:
         This version correctly handles the sequence generation and prediction placement
         """
 
-        # Get sequence length
-        if self.config :
-            sequence_length = self.config['LSTM']['sequence_length']
+        # Get sequence length from config if available
+        if self.config and 'LSTM' in self.config:
+            sequence_length = self.config['LSTM'].get('sequence_length', 45)
             print(f"    Using config sequence length: {sequence_length}")
         elif hasattr(self.pipeline, 'sequence_length'):
             sequence_length = self.pipeline.sequence_length
@@ -365,6 +392,9 @@ class ExtendedPredictor:
             pred_df.to_csv(pred_file, index=False)
             print(f"Saved: {pred_file}")
 
+        # Print comprehensive summary
+        self._print_comprehensive_summary(results_df)
+
         return results_df
 
     def _print_comprehensive_summary(self, results_df):
@@ -431,33 +461,14 @@ class ExtendedPredictor:
                     print(f"  ⚠️  High model disagreement - interpret with caution")
 
 
-def load_best_model_config(results_dir):
-    """Load best model configuration from results directory"""
-    config_file = os.path.join(results_dir, 'best_parameters.json')
-
-    if not os.path.exists(config_file):
-        # Fallback to simple lookup
-        simple_file = os.path.join(results_dir, 'model_lookup.json')
-        if os.path.exists(simple_file):
-            with open(simple_file, 'r') as f:
-                return json.load(f)
-        else:
-            raise FileNotFoundError(f"No model configuration found in {results_dir}")
-
-    with open(config_file, 'r') as f:
-        config = json.load(f)
-
-    return config
-
-
-def run_extended_predictions(pipeline, output_dir=None, results_dir=None):
+def run_extended_predictions(pipeline, site_name, output_dir=None):
     """
     Main function to run extended predictions with best model configuration
 
     Args:
         pipeline: Trained ML pipeline
+        site_name: Site name (e.g., 'Bengbu') to load config from {site}_saved_models/
         output_dir: Output directory for extended predictions
-        results_dir: Directory containing best_model_config.json (e.g., 'Bengbu_results')
 
     Returns:
         DataFrame with results
@@ -466,10 +477,10 @@ def run_extended_predictions(pipeline, output_dir=None, results_dir=None):
     print("EXTENDED PREDICTIONS WITH BEST MODEL CONFIG")
     print("=" * 60)
 
-    if results_dir:
-        print(f"Using model configuration from: {results_dir}")
+    if site_name:
+        print(f"Loading model configuration from: {site_name}_saved_models/")
 
-    predictor = ExtendedPredictor(pipeline, results_dir)
+    predictor = ExtendedPredictor(pipeline, site_name=site_name)
 
     if not predictor.prepare_full_period_data():
         print("Failed to prepare data")
@@ -492,25 +503,44 @@ def run_extended_predictions(pipeline, output_dir=None, results_dir=None):
     print("\n" + "=" * 60)
     print("EXTENDED PREDICTIONS COMPLETE!")
     if predictor.config:
-        print(f"Used best model configuration: {predictor.best_model_name}")
-        if predictor.best_model_name == 'LSTM':
-            print(f"LSTM sequence length: {predictor.sequence_length}")
+        if predictor.best_model_name:
+            print(f"Used best model configuration: {predictor.best_model_name}")
+        else:
+            print(f"Using ensemble of all models from config")
+        if 'LSTM' in predictor.config:
+            print(f"LSTM sequence length: {predictor.config['LSTM'].get('sequence_length', 'not specified')}")
     print("=" * 60)
 
     return results_df
 
 
-# Usage
+# Usage example
 if __name__ == "__main__":
     from enhanced_ml_pipeline import AdvancedHydrologicalMLPipeline
 
+    # Configuration - set these values directly for IDE execution
+    SITE_NAME = "Bengbu"  # Change this to your site name
+    CONFIG_PATH = 'hyperparameter_config.json'
+    OUTPUT_DIR = f'{SITE_NAME}_extended_predictions_clean'
+
     # Load trained pipeline
-    config_path = 'hyperparameter_config.json'
-    pipeline = AdvancedHydrologicalMLPipeline(config_path)
+    pipeline = AdvancedHydrologicalMLPipeline(CONFIG_PATH)
     pipeline.load_and_prepare_data()
 
     # Train models using clean pipeline (no flow features)
+    print("Training models...")
     pipeline.optimize_all_models()
 
-    # Run extended predictions
-    results = run_extended_predictions(pipeline, 'extended_predictions_clean')
+    # Run extended predictions with site-specific config
+    print(f"\nRunning extended predictions for {SITE_NAME}...")
+    results = run_extended_predictions(
+        pipeline=pipeline,
+        site_name=SITE_NAME,
+        output_dir=OUTPUT_DIR
+    )
+
+    if results is not None:
+        print(f"\nResults saved to {OUTPUT_DIR}/")
+        print(f"Total predictions generated: {len(results)}")
+    else:
+        print("\nPrediction generation failed!")

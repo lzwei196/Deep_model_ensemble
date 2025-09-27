@@ -3,7 +3,7 @@
 # Select which models to train and their priorities
 
 # Site configuration
-site_name: Bantai  # Change this to your site name
+site_name: Huaibin  # Change this to your site name
 
 # Traditional ML Models
 traditional_models:

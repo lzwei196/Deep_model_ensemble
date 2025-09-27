@@ -1,6 +1,6 @@
 {
   "data": {
-    "filepath": "../grid_based_forcing_improved_pet_new/Bantai_basin_forcing.csv",
+    "filepath": "../grid_based_forcing_improved_pet_new/Huaibin_basin_forcing.csv",
     "flow_threshold": 0.001,
     "test_size": 0.2,
     "sequence_length": 30,
@@ -118,7 +118,7 @@
     "optimization": {
       "max_trials": 30,
       "executions_per_trial": 1,
-      "directory": "Bantai_LSTM",
+      "directory": "Huaibin_LSTM",
       "project_name": "lstm_hydro",
       "overwrite": true
     }
